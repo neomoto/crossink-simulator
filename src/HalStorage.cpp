@@ -356,8 +356,8 @@ HalFile HalFile::openNextFile() {
       return HalFile();
     }
     ++impl->directoryPosition;
-    if (entry->d_name[0] == '.')
-      continue; // skip . and ..
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      continue; // raw iteration includes hidden files, just like SdFat
 
     std::string childFsPath = impl->path;
     if (childFsPath.back() != '/')
@@ -452,21 +452,29 @@ bool HalStorage::rename(const char *oldPath, const char *newPath) {
 static bool removeDirRecursive(const std::string &full) {
   DIR *d = opendir(full.c_str());
   if (!d)
-    return ::remove(full.c_str()) == 0; // might be a plain file
+    return ::remove(full.c_str()) == 0;
+  bool ok = true;
   struct dirent *entry;
   while ((entry = readdir(d)) != nullptr) {
-    if (entry->d_name[0] == '.')
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
       continue;
-    std::string child = full + "/" + entry->d_name;
+    const std::string child = full + "/" + entry->d_name;
     struct stat st;
-    if (stat(child.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-      removeDirRecursive(child);
-    } else {
-      ::remove(child.c_str());
+    // Do not follow a host symlink out of the simulated SD root.
+    if (lstat(child.c_str(), &st) != 0) {
+      ok = false;
+      break;
+    }
+    const bool removed = S_ISDIR(st.st_mode) ? removeDirRecursive(child)
+                                             : ::remove(child.c_str()) == 0;
+    if (!removed) {
+      ok = false;
+      break;
     }
   }
-  closedir(d);
-  return ::rmdir(full.c_str()) == 0;
+  if (closedir(d) != 0)
+    ok = false;
+  return ok && ::rmdir(full.c_str()) == 0;
 }
 
 bool HalStorage::rmdir(const char *path) {
@@ -571,10 +579,32 @@ std::vector<String> HalStorage::listFiles(const char *path, int maxFiles) {
     return result;
   struct dirent *entry;
   while ((entry = readdir(dir)) != nullptr && (int)result.size() < maxFiles) {
-    if (entry->d_name[0] == '.')
-      continue; // skip . and ..
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      continue; // raw iteration includes hidden files, just like SdFat
     result.push_back(String(entry->d_name));
   }
   closedir(dir);
   return result;
+}
+
+bool HalStorage::readFileToString(const char *module, const std::string &path,
+                                  size_t cap, std::string &out) {
+  out.clear();
+  HalFile file;
+  if (!openFileForRead(module, path, file))
+    return false;
+  const auto size = file.size();
+  if (size > cap || file.isDirectory()) {
+    file.close();
+    return false;
+  }
+  out.resize(size);
+  const bool readOk =
+      size == 0 || file.read(out.data(), size) == static_cast<int>(size);
+  const bool closeOk = file.close();
+  if (!readOk || !closeOk) {
+    out.clear();
+    return false;
+  }
+  return true;
 }

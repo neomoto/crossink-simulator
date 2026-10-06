@@ -386,3 +386,17 @@ Regression probes (no SDL needed):
 ```sh
 python3 tests/run_stack_check.py
 ```
+
+## SDK HTTP transport
+
+Consumers can enable `CROSSPOINT_SIM_USE_SDK_HTTP=1` and
+`FREEINK_NET_EXTERNAL_TLS=1` and `ARDUINOJSON_ENABLE_ARDUINO_STRING=1`, link SDK SecureNet, and add the compile/link flags
+from `pkg-config --cflags --libs openssl`. This requires OpenSSL development
+headers and pkg-config (Homebrew/MacPorts on macOS, the distribution packages on
+Linux). The SDK must support the external TLS implementation switch.
+
+This mode uses native sockets and OpenSSL while running the SDK's real HTTP and
+resumable-download code. It supports HTTP and HTTPS, custom roots and cancellation;
+firmware requests using `setInsecure()` retain that policy. Native TLS is not
+evidence of wolfSSL heap use or ESP32 certificate behavior. Raw directory iteration
+includes dot-prefixed files to match SdFat; callers decide which files to display.

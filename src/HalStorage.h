@@ -38,6 +38,8 @@ public:
                           size_t maxBytes = 0);
   // Write a string to `path` on the SD card. Overwrites existing file.
   // Returns true on success.
+  bool readFileToString(const char *module, const std::string &path, size_t cap,
+                        std::string &out);
   bool writeFile(const char *path, const String &content);
   // Ensure a directory exists, creating it if necessary. Returns true on
   // success.
