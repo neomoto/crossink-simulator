@@ -6,6 +6,7 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -120,8 +121,10 @@ uint64_t HalStorage::usedBytes() {
   struct statvfs stats{};
   // Count reserved blocks as used so download checks reflect writable space.
   return storageStats(stats)
-             ? uint64_t(stats.f_blocks - stats.f_bavail) * stats.f_frsize
-             : 0;
+             ? uint64_t(stats.f_blocks -
+                        std::min(stats.f_blocks, stats.f_bavail)) *
+                   stats.f_frsize
+             : UINT64_MAX; // Fail closed if the preceding total query succeeded.
 }
 
 class HalFile::Impl {

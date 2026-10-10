@@ -22,6 +22,7 @@ public:
   // No-op: the simulator's storage backend is POSIX fds with nothing to
   // power down before a simulated deep sleep.
   void shutdown();
+  // Host filesystem capacity, not a modeled SD-card/device resource limit.
   uint64_t totalBytes() const;
   uint64_t usedBytes();
   std::vector<String> listFiles(const char *path = "/", int maxFiles = 200);
