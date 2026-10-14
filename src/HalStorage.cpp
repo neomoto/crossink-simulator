@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -89,6 +90,15 @@ uint32_t packedFatTime(time_t timestamp) {
       (local.tm_hour << 11) | (local.tm_min << 5) | (local.tm_sec / 2));
   return (date << 16) | time;
 }
+
+bool storageStats(struct statvfs &stats) {
+  const std::string root = configuredStorageRoot();
+  if (statvfs(root.c_str(), &stats) == 0)
+    return true;
+  fprintf(stderr, "[SIM] storage capacity failed: %s (%s)\n", root.c_str(),
+          strerror(errno));
+  return false;
+}
 } // namespace
 
 bool HalStorage::begin() {
@@ -102,6 +112,17 @@ bool HalStorage::begin() {
 }
 bool HalStorage::ready() const { return true; }
 void HalStorage::shutdown() {}
+uint64_t HalStorage::totalBytes() const {
+  struct statvfs stats{};
+  return storageStats(stats) ? uint64_t(stats.f_blocks) * stats.f_frsize : 0;
+}
+uint64_t HalStorage::usedBytes() {
+  struct statvfs stats{};
+  // Count reserved blocks as used so download checks reflect writable space.
+  return storageStats(stats)
+             ? uint64_t(stats.f_blocks - stats.f_bavail) * stats.f_frsize
+             : 0;
+}
 
 class HalFile::Impl {
 public:
@@ -109,6 +130,7 @@ public:
   std::string path;
   DIR *dir = nullptr;
   size_t directoryPosition = 0;
+  bool iterationFailed = false;
 
   bool open(const char *p, int flags) {
     path = p;
@@ -296,6 +318,8 @@ bool HalFile::rename(const char *newPath) {
 }
 bool HalFile::isDirectory() const { return impl && impl->isDir(); }
 void HalFile::rewindDirectory() {
+  if (impl)
+    impl->iterationFailed = false;
   if (impl && impl->dir) {
     rewinddir(impl->dir);
     impl->directoryPosition = 0;
@@ -304,6 +328,7 @@ void HalFile::rewindDirectory() {
 bool HalFile::close() {
   if (!impl)
     return true;
+  impl->iterationFailed = false;
   if (impl->dir) {
     closedir(impl->dir);
     impl->dir = nullptr;
@@ -315,12 +340,21 @@ bool HalFile::close() {
   return true;
 }
 HalFile HalFile::openNextFile() {
+  if (impl)
+    impl->iterationFailed = false;
   if (!impl || !impl->dir)
     return HalFile();
   while (true) {
+    errno = 0;
     struct dirent *entry = readdir(impl->dir);
-    if (!entry)
+    if (!entry) {
+      if (errno != 0) {
+        impl->iterationFailed = true;
+        fprintf(stderr, "[SIM] directory iteration failed: %s (%s)\n",
+                impl->path.c_str(), strerror(errno));
+      }
       return HalFile();
+    }
     ++impl->directoryPosition;
     if (entry->d_name[0] == '.')
       continue; // skip . and ..
@@ -332,17 +366,27 @@ HalFile HalFile::openNextFile() {
 
     HalFile child;
     struct stat st;
-    if (stat(childFsPath.c_str(), &st) != 0)
-      continue;
+    if (stat(childFsPath.c_str(), &st) != 0) {
+      impl->iterationFailed = true;
+      fprintf(stderr, "[SIM] directory entry failed: %s (%s)\n",
+              childFsPath.c_str(), strerror(errno));
+      return HalFile();
+    }
 
     if (S_ISDIR(st.st_mode)) {
       child.impl->openAsDir(childFsPath.c_str());
     } else {
       child.impl->open(childFsPath.c_str(), O_RDONLY);
     }
+    if (!child) {
+      impl->iterationFailed = true;
+      fprintf(stderr, "[SIM] directory entry open failed: %s (%s)\n",
+              childFsPath.c_str(), strerror(errno));
+    }
     return child;
   }
 }
+bool HalFile::iterationFailed() const { return impl && impl->iterationFailed; }
 bool HalFile::isOpen() const {
   if (!impl)
     return false;

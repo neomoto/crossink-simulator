@@ -22,6 +22,8 @@ public:
   // No-op: the simulator's storage backend is POSIX fds with nothing to
   // power down before a simulated deep sleep.
   void shutdown();
+  uint64_t totalBytes() const;
+  uint64_t usedBytes();
   std::vector<String> listFiles(const char *path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on
   // failure.
@@ -115,6 +117,7 @@ public:
   HalFile openNextFile();
   // The host filesystem does not model the device wrapper-allocation failure.
   bool allocationFailed() const { return false; }
+  bool iterationFailed() const;
   bool isOpen() const;
   operator bool() const;
 };
