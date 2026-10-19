@@ -44,9 +44,10 @@ public:
   };
 
   struct TouchSnapshot {
+    static constexpr uint8_t MAX_CONTACTS = 4;
     uint8_t count = 0;
     uint8_t reportedCount = 0;
-    TouchContact contacts[2];
+    TouchContact contacts[MAX_CONTACTS];
   };
 
   struct CompletedMultiTouchSwipe {
@@ -96,10 +97,10 @@ public:
   unsigned long getHeldTime() const;
   unsigned long getPowerButtonHeldTime() const;
   bool hasTouch() const;
-  // SDL currently injects one pointer, but touch device profiles should still
-  // expose their hardware capability so firmware settings can be inspected.
+  // Raw physical contact state bypasses gesture classification and suppression.
+  bool isTouchPressed() const;
   bool supportsMultiTouch() const;
-  constexpr TouchSnapshot getTouchSnapshot() const { return {}; }
+  TouchSnapshot getTouchSnapshot() const;
   constexpr bool wasCompletedMultiTouchSwipe(CompletedMultiTouchSwipe&) const { return false; }
   constexpr bool wasCompletedMultiTouchRotation(CompletedMultiTouchRotation&) const { return false; }
   bool hasHomeKey() const;

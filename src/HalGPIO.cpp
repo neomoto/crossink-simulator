@@ -89,6 +89,10 @@ void recordButtonState(uint8_t button, bool down) {
 
 struct TouchState {
   bool down = false;
+  uint8_t contactCount = 0;
+  // Once multiple contacts appear, single-contact classifiers stay blocked
+  // through partial releases and the final release-edge frame.
+  bool multiContactSequence = false;
   bool pressedThisFrame = false;
   bool releasedThisFrame = false;
   bool movedBeyondTapSlop = false;
@@ -116,6 +120,7 @@ enum class SyntheticAction {
   KeyUp,
   TouchDown,
   TouchUp,
+  TouchContacts,
   HomeDown,
   HomeUp,
   Acceleration,
@@ -188,10 +193,33 @@ void updateTouchMovement(float panelNx, float panelNy) {
   }
 }
 
-void beginTouchAtPanel(float panelNx, float panelNy) {
+void setTouchContactsAtPanel(uint8_t count, float panelNx, float panelNy) {
   if (!BoardConfig::hasTouch())
     return;
+  panelNx = clamp01(panelNx);
+  panelNy = clamp01(panelNy);
+  if (count == 0) {
+    if (!touchState.down)
+      return;
+    updateTouchMovement(panelNx, panelNy);
+    touchState.down = false;
+    touchState.contactCount = 0;
+    touchState.releasedThisFrame = true;
+    touchState.activityThisFrame = true;
+    touchState.lastHeldMs = SDL_GetTicks() - touchState.pressedAt;
+    return;
+  }
+  if (touchState.down) {
+    if (touchState.contactCount != count)
+      touchState.activityThisFrame = true;
+    touchState.contactCount = count;
+    touchState.multiContactSequence |= count > 1;
+    updateTouchMovement(panelNx, panelNy);
+    return;
+  }
   touchState.down = true;
+  touchState.contactCount = count;
+  touchState.multiContactSequence = count > 1;
   touchState.pressedThisFrame = true;
   touchState.activityThisFrame = true;
   touchState.movedBeyondTapSlop = false;
@@ -202,6 +230,10 @@ void beginTouchAtPanel(float panelNx, float panelNy) {
   touchState.currentNx = panelNx;
   touchState.currentNy = panelNy;
   touchState.pressedAt = SDL_GetTicks();
+}
+
+void beginTouchAtPanel(float panelNx, float panelNy) {
+  setTouchContactsAtPanel(1, panelNx, panelNy);
 }
 
 void beginTouch(float logicalNx, float logicalNy) {
@@ -225,13 +257,7 @@ void moveTouch(float logicalNx, float logicalNy) {
 }
 
 void endTouchAtPanel(float panelNx, float panelNy) {
-  if (!touchState.down)
-    return;
-  moveTouchAtPanel(panelNx, panelNy);
-  touchState.down = false;
-  touchState.releasedThisFrame = true;
-  touchState.activityThisFrame = true;
-  touchState.lastHeldMs = SDL_GetTicks() - touchState.pressedAt;
+  setTouchContactsAtPanel(0, panelNx, panelNy);
 }
 
 void endTouch(float logicalNx, float logicalNy) {
@@ -462,6 +488,10 @@ void processSyntheticEvents() {
     case SyntheticAction::TouchUp:
       endTouch(event.logicalNx, event.logicalNy);
       break;
+    case SyntheticAction::TouchContacts:
+      setTouchContactsAtPanel(static_cast<uint8_t>(event.button),
+                              event.logicalNx, event.logicalNy);
+      break;
     case SyntheticAction::HomeDown:
       beginHomeKey();
       break;
@@ -494,6 +524,12 @@ void simulatorSetButtonPressed(uint8_t button, bool pressed) {
   syntheticEvents.push_back(
       {millis(), pressed ? SyntheticAction::KeyDown : SyntheticAction::KeyUp,
        button});
+}
+
+void simulatorSetTouchContacts(uint8_t count, float nx, float ny) {
+  initializeSyntheticEvents();
+  syntheticEvents.push_back(
+      {millis(), SyntheticAction::TouchContacts, count, nx, ny});
 }
 
 static void clearButtonState() {
@@ -565,6 +601,10 @@ void HalGPIO::beginFrame() {
   for (int i = 0; i < NUM_BUTTONS; i++) {
     pressedThisFrame[i] = false;
     releasedThisFrame[i] = false;
+  }
+  if (!touchState.down) {
+    touchState.multiContactSequence = false;
+    touchState.contactSuppressed = false;
   }
   touchState.pressedThisFrame = false;
   touchState.releasedThisFrame = false;
@@ -693,7 +733,24 @@ unsigned long HalGPIO::getPowerButtonHeldTime() const {
 
 bool HalGPIO::hasTouch() const { return BoardConfig::hasTouch(); }
 
+bool HalGPIO::isTouchPressed() const { return touchState.down; }
+
 bool HalGPIO::supportsMultiTouch() const { return BoardConfig::hasTouch(); }
+
+HalGPIO::TouchSnapshot HalGPIO::getTouchSnapshot() const {
+  TouchSnapshot snapshot;
+  if (!supportsMultiTouch())
+    return snapshot;
+  snapshot.reportedCount = touchState.contactCount;
+  snapshot.count =
+      std::min<uint8_t>(snapshot.reportedCount, TouchSnapshot::MAX_CONTACTS);
+  for (uint8_t i = 0; i < snapshot.count; ++i) {
+    snapshot.contacts[i].id = i;
+    snapshot.contacts[i].nx = touchState.currentNx;
+    snapshot.contacts[i].ny = touchState.currentNy;
+  }
+  return snapshot;
+}
 
 bool HalGPIO::hasHomeKey() const { return BoardConfig::hasHomeKey(); }
 
@@ -707,7 +764,7 @@ bool HalGPIO::wasHomeKeyLongPressed() const {
 
 bool HalGPIO::wasTouchTap(float &nx, float &ny) const {
   if (!touchState.releasedThisFrame || touchState.movedBeyondTapSlop ||
-      touchState.contactSuppressed)
+      touchState.contactSuppressed || touchState.multiContactSequence)
     return false;
   nx = touchState.startNx;
   ny = touchState.startNy;
@@ -715,7 +772,8 @@ bool HalGPIO::wasTouchTap(float &nx, float &ny) const {
 }
 
 bool HalGPIO::wasTouchDown(float &nx, float &ny) const {
-  if (!touchState.pressedThisFrame)
+  if (!touchState.pressedThisFrame || touchState.contactSuppressed ||
+      touchState.multiContactSequence)
     return false;
   nx = touchState.startNx;
   ny = touchState.startNy;
@@ -723,13 +781,15 @@ bool HalGPIO::wasTouchDown(float &nx, float &ny) const {
 }
 
 bool HalGPIO::wasTouchReleased() const {
-  return touchState.releasedThisFrame && !touchState.contactSuppressed;
+  // SDK multi-contact releases still clear UI pressed-state feedback.
+  return touchState.releasedThisFrame &&
+         (!touchState.contactSuppressed || touchState.multiContactSequence);
 }
 
 bool HalGPIO::isTouchTapCandidate(float &nx, float &ny,
                                   unsigned long &heldMs) const {
   if (!touchState.down || touchState.movedBeyondTapSlop ||
-      touchState.contactSuppressed) {
+      touchState.contactSuppressed || touchState.multiContactSequence) {
     heldMs = 0;
     return false;
   }
@@ -749,12 +809,13 @@ bool HalGPIO::wasTouchLongPress(float &nx, float &ny) const {
 }
 
 void HalGPIO::suppressTouchContact() {
-  if (touchState.down)
+  if (touchState.down || touchState.releasedThisFrame)
     touchState.contactSuppressed = true;
 }
 
 bool HalGPIO::isTouchHeldAt(float &nx, float &ny) const {
-  if (!touchState.down || touchState.contactSuppressed)
+  if (!touchState.down || touchState.contactSuppressed ||
+      touchState.multiContactSequence)
     return false;
   nx = touchState.currentNx;
   ny = touchState.currentNy;
@@ -765,7 +826,8 @@ unsigned long HalGPIO::lastTouchHeldMs() const { return touchState.lastHeldMs; }
 
 bool HalGPIO::wasSwipe(float &nxStart, float &nyStart, float &nxEnd,
                        float &nyEnd) const {
-  if (!touchState.releasedThisFrame ||
+  if (!touchState.releasedThisFrame || touchState.contactSuppressed ||
+      touchState.multiContactSequence ||
       touchState.lastHeldMs > TOUCH_SWIPE_MAX_MS)
     return false;
   const float dx =

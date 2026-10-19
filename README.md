@@ -166,10 +166,16 @@ tests possible without desktop-control permissions:
   displayed logical pixels, so they match UI layouts and screenshots after the
   firmware changes orientation. Normalized coordinates from 0.0 to 1.0 are
   also accepted for existing scripts.
-- X3 sensor actions use `ACCEL:<x>,<y>,<z>` in g. The sample remains active
+- X3 and Sticky sensor actions use `ACCEL:<x>,<y>,<z>` in g. The sample remains active
   until another `ACCEL` action; `ACCEL:OFF` simulates unavailable readings.
   Fresh acceleration is available only while the consuming firmware enables
   auto-rotation in a foreground reader, after wake stabilization.
+- Firmware-side smoke scenarios can call
+  `simulatorSetTouchContacts(count, nx, ny)` from `SimulatorInput.h`. It queues a
+  raw contact sample for the next HAL update using normalized panel coordinates.
+  Zero releases all contacts; multi-contact sequences remain active and suppress
+  single-contact gestures through partial releases. Snapshots expose up to four
+  contacts at the supplied position; no pinch or rotation geometry is synthesized.
 - `CROSSPOINT_SIM_SCREENSHOTS` saves BMP screenshots as
   `<milliseconds>:<path>`, separated by semicolons. Create the destination
   directory before running the simulator.
@@ -223,8 +229,8 @@ CROSSPOINT_SIM_INPUT_SCRIPT='0:ACCEL:1,0,0;3000:ACCEL:0,-1,0;6000:ACCEL:OFF;9000
 ```
 
 Acceleration is synthetic board-frame input, not a physical sensor measurement.
-This cannot validate X3 mounting signs, real sensor noise, battery use, or
-electrical sleep/wake behavior.
+This cannot validate sensor mounting signs, real sensor noise, battery use, or
+electrical sleep/wake behavior on X3 or Sticky.
 
 ## Notes
 

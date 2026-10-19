@@ -1,5 +1,7 @@
 #include "HalTiltSensor.h"
 
+#include <BoardConfig.h>
+
 #include "SimulatorInput.h"
 
 namespace {
@@ -21,11 +23,8 @@ void simulatorSetAcceleration(float ax, float ay, float az) {
 void simulatorClearAcceleration() { accelerationAvailable = false; }
 
 void HalTiltSensor::begin() {
-#if defined(SIMULATOR_DEVICE_X3)
-  _available = true;
-#else
-  _available = false;
-#endif
+  _available = BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3 ||
+               BoardConfig::isSticky();
   _isAwake = false;
   _accelerationFresh = false;
   _lastPollMs = millis();
@@ -73,7 +72,7 @@ void HalTiltSensor::update(const uint8_t enabled, const uint8_t /*direction*/,
   _lastPollMs = now;
   _accelerationFresh = false;
 
-  // This is synthetic gravity, not a model of an X3 IMU or its gyro. Updating
+  // This is synthetic gravity, not a model of a physical IMU or its gyro. Updating
   // the input does not publish a sample until the production poll cadence
   // fires.
   if (autoRotateEnabled && accelerationAvailable) {
