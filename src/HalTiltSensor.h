@@ -24,37 +24,26 @@ class HalTiltSensor {
 private:
   bool _available = false;
   bool _isAwake = false;
+  bool _accelerationFresh = false;
+  float _ax = 0.0f;
+  float _ay = 0.0f;
+  float _az = 0.0f;
+  unsigned long _wakeMs = 0;
+  unsigned long _lastPollMs = 0;
+
+  static constexpr unsigned long POLL_INTERVAL_MS = 50;
+  static constexpr unsigned long WAKE_STABILIZE_MS = 300;
+  static constexpr unsigned long ACCELERATION_MAX_AGE_MS = 150;
 
 public:
-  void begin() {
-#if defined(SIMULATOR_DEVICE_X3)
-    _available = true;
-#else
-    _available = false;
-#endif
-    _isAwake = false;
-  }
-
-  bool wake() {
-    if (!_available)
-      return false;
-    _isAwake = true;
-    return true;
-  }
-
-  bool deepSleep() {
-    if (!_available)
-      return false;
-    _isAwake = false;
-    return true;
-  }
+  void begin();
+  bool wake();
+  bool deepSleep();
 
   bool isAvailable() const { return _available; }
-  // Support both firmware HAL shapes while the repos are out of sync.
-  void update(const uint8_t /*mode*/, const uint8_t /*orientation*/, const bool /*inReader*/) {}
-  void update(const uint8_t mode, const uint8_t /*direction*/, const uint8_t orientation, const bool inReader) {
-    update(mode, orientation, inReader);
-  }
+  void update(uint8_t enabled, uint8_t direction, uint8_t orientation,
+              bool inReader, bool autoRotateEnabled = false);
+  bool takeAcceleration(float &ax, float &ay, float &az);
   bool wasTiltedForward() { return false; }
   bool wasTiltedBack() { return false; }
   bool hadActivity() { return false; }

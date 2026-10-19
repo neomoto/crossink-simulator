@@ -166,6 +166,10 @@ tests possible without desktop-control permissions:
   displayed logical pixels, so they match UI layouts and screenshots after the
   firmware changes orientation. Normalized coordinates from 0.0 to 1.0 are
   also accepted for existing scripts.
+- X3 sensor actions use `ACCEL:<x>,<y>,<z>` in g. The sample remains active
+  until another `ACCEL` action; `ACCEL:OFF` simulates unavailable readings.
+  Fresh acceleration is available only while the consuming firmware enables
+  auto-rotation in a foreground reader, after wake stabilization.
 - `CROSSPOINT_SIM_SCREENSHOTS` saves BMP screenshots as
   `<milliseconds>:<path>`, separated by semicolons. Create the destination
   directory before running the simulator.
@@ -210,6 +214,17 @@ CROSSPOINT_SIM_SCREENSHOTS_AFTER_WAKE='1600:./qa-artifacts/wake.bmp' \
 The screenshot contains the SDL renderer output at the host's actual drawable
 resolution, including Retina/HiDPI scaling. BMP is used because it is supported
 directly by SDL2 and adds no image-encoding dependency to the simulator.
+
+For an X3 build with auto-rotation enabled and a book set to reopen:
+
+```bash
+CROSSPOINT_SIM_INPUT_SCRIPT='0:ACCEL:1,0,0;3000:ACCEL:0,-1,0;6000:ACCEL:OFF;9000:QUIT' \
+  .pio/build/simulator-X3/program
+```
+
+Acceleration is synthetic board-frame input, not a physical sensor measurement.
+This cannot validate X3 mounting signs, real sensor noise, battery use, or
+electrical sleep/wake behavior.
 
 ## Notes
 

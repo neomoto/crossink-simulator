@@ -55,11 +55,37 @@ static const SDL_Scancode buttonScancode[NUM_BUTTONS] = {
 
 static bool pressedThisFrame[NUM_BUTTONS] = {};
 static bool releasedThisFrame[NUM_BUTTONS] = {};
-static unsigned long buttonPressTime[NUM_BUTTONS] = {};
+static bool timedButtonDown[NUM_BUTTONS] = {};
+static unsigned long buttonPressStart = 0;
+static unsigned long buttonPressFinish = 0;
+static unsigned long powerButtonPressStart = 0;
+static unsigned long powerButtonPressFinish = 0;
 static bool syntheticButtonDown[NUM_BUTTONS] = {};
 static bool simulatorSleepRequested = false;
 
 namespace {
+
+void recordButtonState(uint8_t button, bool down) {
+  if (timedButtonDown[button] == down)
+    return;
+  const unsigned long now = SDL_GetTicks();
+  const bool anyHeld =
+      std::any_of(timedButtonDown, timedButtonDown + NUM_BUTTONS,
+                  [](bool held) { return held; });
+  timedButtonDown[button] = down;
+  if (down) {
+    if (!anyHeld)
+      buttonPressStart = now;
+    if (button == HalGPIO::BTN_POWER)
+      powerButtonPressStart = now;
+  } else {
+    if (button == HalGPIO::BTN_POWER)
+      powerButtonPressFinish = now;
+    if (!std::any_of(timedButtonDown, timedButtonDown + NUM_BUTTONS,
+                     [](bool held) { return held; }))
+      buttonPressFinish = now;
+  }
+}
 
 struct TouchState {
   bool down = false;
@@ -92,6 +118,8 @@ enum class SyntheticAction {
   TouchUp,
   HomeDown,
   HomeUp,
+  Acceleration,
+  ClearAcceleration,
   Sleep,
   Quit
 };
@@ -102,6 +130,7 @@ struct SyntheticEvent {
   int button = -1;
   float logicalNx = 0.0f;
   float logicalNy = 0.0f;
+  float accelerationZ = 0.0f;
   bool handled = false;
 };
 
@@ -282,7 +311,7 @@ void requestSimulatorSleep() {
   // sleep path.
   pressedThisFrame[HalGPIO::BTN_POWER] = true;
   syntheticButtonDown[HalGPIO::BTN_POWER] = true;
-  buttonPressTime[HalGPIO::BTN_POWER] = SDL_GetTicks();
+  recordButtonState(HalGPIO::BTN_POWER, true);
 }
 
 std::string uppercase(std::string value) {
@@ -348,6 +377,24 @@ void initializeSyntheticEvents() {
                                10);
         syntheticEvents.push_back({atMs, SyntheticAction::HomeDown});
         syntheticEvents.push_back({atMs + holdMs, SyntheticAction::HomeUp});
+      } else if (key == "ACCEL" && secondColon != std::string::npos) {
+        const std::string detail = item.substr(secondColon + 1);
+        if (uppercase(detail) == "OFF") {
+          syntheticEvents.push_back({atMs, SyntheticAction::ClearAcceleration});
+        } else {
+          float ax = 0.0f;
+          float ay = 0.0f;
+          float az = 0.0f;
+          char extra = '\0';
+          if (std::sscanf(detail.c_str(), "%f,%f,%f %c", &ax, &ay, &az,
+                          &extra) == 3) {
+            syntheticEvents.push_back(
+                {atMs, SyntheticAction::Acceleration, -1, ax, ay, az});
+          } else {
+            std::fprintf(stderr, "[SIM] Invalid ACCEL event: %s\n",
+                         item.c_str());
+          }
+        }
       } else if ((key == "TAP" || key == "SWIPE") &&
                  secondColon != std::string::npos) {
         float x1 = 0.0f;
@@ -400,14 +447,14 @@ void processSyntheticEvents() {
     case SyntheticAction::KeyDown:
       pressedThisFrame[event.button] = true;
       syntheticButtonDown[event.button] = true;
-      // Held-time calculations use SDL_GetTicks() for real keyboard events;
-      // synthetic presses must use the same clock origin to avoid unsigned
-      // underflow being mistaken for an immediate long press.
-      buttonPressTime[event.button] = SDL_GetTicks();
+      recordButtonState(static_cast<uint8_t>(event.button), true);
       break;
     case SyntheticAction::KeyUp:
       releasedThisFrame[event.button] = true;
       syntheticButtonDown[event.button] = false;
+      recordButtonState(
+          static_cast<uint8_t>(event.button),
+          SDL_GetKeyboardState(nullptr)[buttonScancode[event.button]] != 0);
       break;
     case SyntheticAction::TouchDown:
       beginTouch(event.logicalNx, event.logicalNy);
@@ -421,6 +468,13 @@ void processSyntheticEvents() {
     case SyntheticAction::HomeUp:
       endHomeKey();
       break;
+    case SyntheticAction::Acceleration:
+      simulatorSetAcceleration(event.logicalNx, event.logicalNy,
+                               event.accelerationZ);
+      break;
+    case SyntheticAction::ClearAcceleration:
+      simulatorClearAcceleration();
+      break;
     case SyntheticAction::Sleep:
       requestSimulatorSleep();
       break;
@@ -433,13 +487,26 @@ void processSyntheticEvents() {
 
 } // namespace
 
+void simulatorSetButtonPressed(uint8_t button, bool pressed) {
+  if (button >= NUM_BUTTONS)
+    return;
+  initializeSyntheticEvents();
+  syntheticEvents.push_back(
+      {millis(), pressed ? SyntheticAction::KeyDown : SyntheticAction::KeyUp,
+       button});
+}
+
 static void clearButtonState() {
   for (int i = 0; i < NUM_BUTTONS; i++) {
     pressedThisFrame[i] = false;
     releasedThisFrame[i] = false;
-    buttonPressTime[i] = 0;
+    timedButtonDown[i] = false;
     syntheticButtonDown[i] = false;
   }
+  buttonPressStart = 0;
+  buttonPressFinish = 0;
+  powerButtonPressStart = 0;
+  powerButtonPressFinish = 0;
   touchState = {};
   homeKeyDown = false;
   homeKeyPressedThisFrame = false;
@@ -536,7 +603,7 @@ void HalGPIO::update() {
       int btn = scancodeToButton(e.key.keysym.scancode);
       if (btn >= 0) {
         pressedThisFrame[btn] = true;
-        buttonPressTime[btn] = SDL_GetTicks();
+        recordButtonState(static_cast<uint8_t>(btn), true);
       }
     } else if (e.type == SDL_KEYUP) {
       if (e.key.keysym.scancode == HOME_KEY_SCANCODE) {
@@ -546,6 +613,7 @@ void HalGPIO::update() {
       int btn = scancodeToButton(e.key.keysym.scancode);
       if (btn >= 0) {
         releasedThisFrame[btn] = true;
+        recordButtonState(static_cast<uint8_t>(btn), syntheticButtonDown[btn]);
       }
     } else if (e.type == SDL_MOUSEBUTTONDOWN &&
                e.button.button == SDL_BUTTON_LEFT) {
@@ -609,27 +677,18 @@ bool HalGPIO::wasAnyReleased() const {
 }
 
 unsigned long HalGPIO::getHeldTime() const {
-  // Return the longest held time among all currently pressed buttons
-  unsigned long now = SDL_GetTicks();
-  unsigned long maxHeld = 0;
-  const uint8_t *state = SDL_GetKeyboardState(NULL);
-  for (int i = 0; i < NUM_BUTTONS; i++) {
-    if ((state[buttonScancode[i]] || syntheticButtonDown[i]) &&
-        buttonPressTime[i] > 0) {
-      unsigned long held = now - buttonPressTime[i];
-      if (held > maxHeld)
-        maxHeld = held;
-    }
-  }
-  return maxHeld;
+  // Match InputManager: retain the first-press/final-release duration after a
+  // button sequence ends, rather than reclassifying its release as a short tap.
+  const bool held = std::any_of(timedButtonDown, timedButtonDown + NUM_BUTTONS,
+                                [](bool down) { return down; });
+  return held ? SDL_GetTicks() - buttonPressStart
+              : buttonPressFinish - buttonPressStart;
 }
 
 unsigned long HalGPIO::getPowerButtonHeldTime() const {
-  const uint8_t *state = SDL_GetKeyboardState(NULL);
-  if ((!state[buttonScancode[BTN_POWER]] && !syntheticButtonDown[BTN_POWER]) ||
-      buttonPressTime[BTN_POWER] == 0)
-    return 0;
-  return SDL_GetTicks() - buttonPressTime[BTN_POWER];
+  return timedButtonDown[BTN_POWER]
+             ? SDL_GetTicks() - powerButtonPressStart
+             : powerButtonPressFinish - powerButtonPressStart;
 }
 
 bool HalGPIO::hasTouch() const { return BoardConfig::hasTouch(); }
